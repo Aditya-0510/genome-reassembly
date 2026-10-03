@@ -89,6 +89,18 @@ python -m src.genome_lm.motif_discovery \
   --output-dir outputs/baseline_cnn/motif_discovery
 ```
 
+## Motif report (tables + plots)
+
+Generate ranked site tables and motif plots from motif discovery outputs.
+
+```bash
+python -m src.genome_lm.motif_report \
+  --input-dir outputs/baseline_cnn/motif_discovery \
+  --output-dir outputs/baseline_cnn/motif_discovery/report \
+  --top-n-sites 200 \
+  --top-n-motifs 25
+```
+
 ## Notes
 
 - The code keeps chromosome/contig coordinates for each window.
