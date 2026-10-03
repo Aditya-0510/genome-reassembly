@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 
 import torch
@@ -12,6 +13,12 @@ from torch.utils.data import DataLoader, random_split
 from .data import DNAMaskedLMDataset, build_windows
 from .model import GenomicCNNMLM
 from .tokenizer import DNATokenizer
+
+
+def count_parameters(model: nn.Module) -> tuple[int, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +88,16 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
+    print("=" * 72)
+    print("Starting DNA MLM training")
+    print(f"FASTA: {args.fasta}")
+    print(
+        "Config: "
+        f"window={args.window_size}, stride={args.stride}, max_windows={args.max_windows}, "
+        f"mask_prob={args.mask_probability}, batch_size={args.batch_size}, epochs={args.epochs}"
+    )
+    print("=" * 72)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -95,6 +112,8 @@ def main() -> None:
 
     if not windows:
         raise RuntimeError("No windows generated. Relax filters or check FASTA path.")
+
+    print(f"Generated windows: {len(windows)}")
 
     dataset = DNAMaskedLMDataset(
         windows=windows,
@@ -111,6 +130,8 @@ def main() -> None:
         generator=torch.Generator().manual_seed(args.seed),
     )
 
+    print(f"Dataset split: train={len(train_ds)} val={len(val_ds)}")
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -125,6 +146,7 @@ def main() -> None:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
     model = GenomicCNNMLM(
         vocab_size=tokenizer.vocab_size,
         embedding_dim=args.embedding_dim,
@@ -132,6 +154,13 @@ def main() -> None:
         num_layers=args.num_layers,
         dropout=args.dropout,
     ).to(device)
+    total_params, trainable_params = count_parameters(model)
+    print(
+        "Model: "
+        f"embedding_dim={args.embedding_dim}, channels={args.channels}, num_layers={args.num_layers}, "
+        f"params={total_params:,} (trainable={trainable_params:,})"
+    )
+    print(f"Batches per epoch: train={len(train_loader)} val={len(val_loader)}")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -144,12 +173,14 @@ def main() -> None:
     history: list[dict[str, float | int]] = []
 
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.time()
         model.train()
         total_train_loss = 0.0
         total_train_acc = 0.0
         train_batches = 0
+        print(f"\n[Epoch {epoch}/{args.epochs}] Training...")
 
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader, start=1):
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
 
@@ -164,11 +195,21 @@ def main() -> None:
             total_train_acc += masked_accuracy(logits, labels)
             train_batches += 1
 
+            if batch_idx % 50 == 0 or batch_idx == len(train_loader):
+                avg_loss = total_train_loss / train_batches
+                avg_acc = total_train_acc / train_batches
+                print(
+                    f"  batch {batch_idx:>4}/{len(train_loader)} | "
+                    f"avg_train_loss={avg_loss:.4f} avg_train_acc={avg_acc:.4f}"
+                )
+
         train_loss = total_train_loss / max(1, train_batches)
         train_acc = total_train_acc / max(1, train_batches)
 
+        print(f"[Epoch {epoch}/{args.epochs}] Validating...")
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         val_perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
+        epoch_seconds = time.time() - epoch_start
 
         epoch_log = {
             "epoch": epoch,
@@ -177,29 +218,34 @@ def main() -> None:
             "val_loss": val_loss,
             "val_masked_accuracy": val_acc,
             "val_perplexity": val_perplexity,
+            "epoch_seconds": epoch_seconds,
         }
         history.append(epoch_log)
 
         print(
             f"Epoch {epoch:02d} | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_ppl={val_perplexity:.2f}"
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_ppl={val_perplexity:.2f} | "
+            f"time={epoch_seconds:.1f}s"
         )
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            checkpoint_path = output_dir / "best_model.pt"
             torch.save(
                 {
                     "model_state": model.state_dict(),
                     "tokenizer_vocab": tokenizer.vocab,
                     "args": vars(args),
                 },
-                output_dir / "best_model.pt",
+                checkpoint_path,
             )
+            print(f"  New best checkpoint saved: {checkpoint_path}")
 
     with (output_dir / "training_history.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
+    print(f"History saved to: {output_dir / 'training_history.json'}")
     print(f"Training complete. Best val_loss={best_val_loss:.4f}")
     print(f"Saved model to: {output_dir / 'best_model.pt'}")
 

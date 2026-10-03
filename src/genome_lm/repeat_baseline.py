@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -26,13 +27,25 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    start_time = time.time()
+    print("=" * 72)
+    print("Starting repeat baseline training")
+    print(f"Embeddings file: {args.embeddings}")
+    print(
+        "Config: "
+        f"repeat_threshold={args.repeat_threshold}, test_size={args.test_size}, seed={args.seed}"
+    )
+    print("=" * 72)
+
     data = np.load(args.embeddings, allow_pickle=True)
     x = data["embeddings"]
     repeat_fraction = data["repeat_fraction"]
+    print(f"Loaded embeddings shape: {x.shape}")
 
     y = (repeat_fraction >= args.repeat_threshold).astype(int)
     positives = int(y.sum())
     negatives = int(len(y) - positives)
+    print(f"Label distribution: repeats={positives} non_repeats={negatives}")
 
     if positives == 0 or negatives == 0:
         raise RuntimeError(
@@ -46,9 +59,12 @@ def main() -> None:
         random_state=args.seed,
         stratify=y,
     )
+    print(f"Split sizes: train={len(y_train)} test={len(y_test)}")
 
     clf = LogisticRegression(max_iter=1000, random_state=args.seed)
+    print("Training LogisticRegression classifier...")
     clf.fit(x_train, y_train)
+    print("Model training complete. Evaluating...")
 
     y_prob = clf.predict_proba(x_test)[:, 1]
     y_pred = (y_prob >= 0.5).astype(int)
@@ -64,6 +80,7 @@ def main() -> None:
     print("Repeat classification baseline metrics:")
     for key, value in metrics.items():
         print(f"  {key}: {value:.4f}")
+    print(f"Total runtime: {time.time() - start_time:.1f}s")
 
 
 if __name__ == "__main__":

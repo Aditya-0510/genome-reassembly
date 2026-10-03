@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    start_time = time.time()
+    print("=" * 72)
+    print("Starting embedding extraction")
+    print(f"Checkpoint: {args.checkpoint}")
+    print(f"FASTA: {args.fasta}")
+    print(
+        "Config: "
+        f"window={args.window_size}, stride={args.stride}, max_windows={args.max_windows}, "
+        f"batch_size={args.batch_size}"
+    )
+    print("=" * 72)
+
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     train_args = ckpt["args"]
 
@@ -43,6 +56,12 @@ def main() -> None:
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
+    print(
+        "Loaded model config: "
+        f"embedding_dim={train_args['embedding_dim']}, channels={train_args['channels']}, "
+        f"num_layers={train_args['num_layers']}"
+    )
+
     windows = build_windows(
         fasta_path=args.fasta,
         window_size=args.window_size,
@@ -50,6 +69,7 @@ def main() -> None:
         max_windows=args.max_windows,
         min_acgt_fraction=args.min_acgt_fraction,
     )
+    print(f"Generated windows: {len(windows)}")
 
     dataset = DNAMaskedLMDataset(
         windows=windows,
@@ -62,6 +82,7 @@ def main() -> None:
         shuffle=False,
         num_workers=args.num_workers,
     )
+    print(f"Batches to process: {len(loader)}")
 
     embedding_list: list[np.ndarray] = []
     repeat_fraction_list: list[float] = []
@@ -69,8 +90,9 @@ def main() -> None:
     start_list: list[int] = []
     end_list: list[int] = []
 
+    total_processed = 0
     with torch.no_grad():
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, start=1):
             input_ids = batch["input_ids"]
             logits, token_embeddings = model(input_ids, return_embeddings=True)
             _ = logits
@@ -82,6 +104,13 @@ def main() -> None:
             seq_id_list.extend(batch["seq_id"])
             start_list.extend(batch["start"].numpy().tolist())
             end_list.extend(batch["end"].numpy().tolist())
+
+            total_processed += input_ids.size(0)
+            if batch_idx % 20 == 0 or batch_idx == len(loader):
+                print(
+                    f"  batch {batch_idx:>4}/{len(loader)} | "
+                    f"windows_processed={total_processed}"
+                )
 
     embeddings = np.concatenate(embedding_list, axis=0) if embedding_list else np.empty((0, 1))
 
@@ -96,8 +125,10 @@ def main() -> None:
         end=np.array(end_list),
     )
 
+    elapsed = time.time() - start_time
     print(f"Saved embeddings to {output_path}")
     print(f"Embeddings shape: {embeddings.shape}")
+    print(f"Extraction time: {elapsed:.1f}s")
 
 
 if __name__ == "__main__":
