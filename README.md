@@ -72,6 +72,23 @@ python -m src.genome_lm.repeat_robustness \
   --summary-csv outputs/baseline_cnn/robustness_summary.csv
 ```
 
+## Motif discovery (position-wise masking)
+
+This analysis masks each position in selected windows, records model probabilities
+for A/C/G/T, and exports candidate motif contexts.
+
+```bash
+python -m src.genome_lm.motif_discovery \
+  --fasta dataset/ncbi_dataset/data/GCF_000001405.40/GCF_000001405.40_GRCh38.p14_genomic.fna \
+  --checkpoint outputs/baseline_cnn/best_model.pt \
+  --window-size 512 \
+  --stride 512 \
+  --max-windows 50 \
+  --motif-width 9 \
+  --top-k-motifs 200 \
+  --output-dir outputs/baseline_cnn/motif_discovery
+```
+
 ## Notes
 
 - The code keeps chromosome/contig coordinates for each window.
