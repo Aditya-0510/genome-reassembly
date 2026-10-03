@@ -57,6 +57,21 @@ python -m src.genome_lm.repeat_baseline \
   --embeddings outputs/baseline_cnn/embeddings.npz
 ```
 
+## Robustness sweep for repeat baseline
+
+This sweep evaluates stability across repeat thresholds, random seeds, and sample sizes,
+then writes run-level and summary CSV files.
+
+```bash
+python -m src.genome_lm.repeat_robustness \
+  --embeddings outputs/baseline_cnn/embeddings.npz \
+  --repeat-thresholds 0.1,0.2,0.3,0.4 \
+  --seeds 13,21,34,55,89 \
+  --sample-sizes 5000 \
+  --output-csv outputs/baseline_cnn/robustness_runs.csv \
+  --summary-csv outputs/baseline_cnn/robustness_summary.csv
+```
+
 ## Notes
 
 - The code keeps chromosome/contig coordinates for each window.
