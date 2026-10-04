@@ -1,0 +1,10 @@
+{
+  "n_prediction_rows": 25600,
+  "n_unique_seq_ids": 1,
+  "n_unique_motifs": 200,
+  "mean_true_base_prob": 0.33483257617154094,
+  "mean_surprise_nats": 1.215269882759869,
+  "mean_entropy_bits": 1.7534284307066992,
+  "mean_top1_minus_top2": 0.15600186864088755,
+  "runtime_seconds": 1.2241928577423096
+}

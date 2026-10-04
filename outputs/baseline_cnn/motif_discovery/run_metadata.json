@@ -1,0 +1,13 @@
+{
+  "fasta": "dataset\\ncbi_dataset\\data\\GCF_000001405.40\\GCF_000001405.40_GRCh38.p14_genomic.fna",
+  "checkpoint": "outputs\\baseline_cnn\\best_model.pt",
+  "window_size": 512,
+  "stride": 512,
+  "max_windows": 50,
+  "motif_width": 9,
+  "top_k_motifs": 200,
+  "n_windows_scanned": 50,
+  "n_position_rows": 25600,
+  "n_unique_candidate_motifs": 22142,
+  "runtime_seconds": 12.65496039390564
+}
