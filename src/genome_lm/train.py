@@ -15,6 +15,14 @@ from .model import GenomicCNNMLM
 from .tokenizer import DNATokenizer
 
 
+def lr_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
+    if warmup_steps > 0 and step < warmup_steps:
+        return (step + 1) / warmup_steps
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    progress = min(max(progress, 0.0), 1.0)
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 def count_parameters(model: nn.Module) -> tuple[int, int]:
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -34,6 +42,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=0,
+        help="Linear warmup steps before cosine decay (0 disables warmup).",
+    )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for clipping. Set to 0 to disable.",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable mixed-precision training (requires CUDA).",
+    )
+    parser.add_argument(
+        "--reverse-complement-prob",
+        type=float,
+        default=0.0,
+        help="Probability of reverse-complementing a window during training (augmentation).",
+    )
 
     parser.add_argument("--embedding-dim", type=int, default=128)
     parser.add_argument("--channels", type=int, default=256)
@@ -120,6 +151,7 @@ def main() -> None:
         tokenizer=tokenizer,
         mask_probability=args.mask_probability,
         seed=args.seed,
+        reverse_complement_prob=args.reverse_complement_prob,
     )
 
     val_size = max(1, int(len(dataset) * args.val_fraction))
@@ -169,6 +201,13 @@ def main() -> None:
     )
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
+    total_steps = args.epochs * len(train_loader)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: lr_lambda(step, args.warmup_steps, total_steps),
+    )
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+
     best_val_loss = float("inf")
     history: list[dict[str, float | int]] = []
 
@@ -184,12 +223,18 @@ def main() -> None:
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
 
-            logits = model(input_ids)
-            loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
-
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=args.amp):
+                logits = model(input_ids)
+                loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+            scaler.scale(loss).backward()
+            if args.grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
 
             total_train_loss += loss.item()
             total_train_acc += masked_accuracy(logits, labels)
@@ -198,9 +243,10 @@ def main() -> None:
             if batch_idx % 50 == 0 or batch_idx == len(train_loader):
                 avg_loss = total_train_loss / train_batches
                 avg_acc = total_train_acc / train_batches
+                current_lr = scheduler.get_last_lr()[0]
                 print(
                     f"  batch {batch_idx:>4}/{len(train_loader)} | "
-                    f"avg_train_loss={avg_loss:.4f} avg_train_acc={avg_acc:.4f}"
+                    f"avg_train_loss={avg_loss:.4f} avg_train_acc={avg_acc:.4f} lr={current_lr:.2e}"
                 )
 
         train_loss = total_train_loss / max(1, train_batches)

@@ -73,11 +73,21 @@ class DNAMaskedLMDataset(Dataset):
         tokenizer: DNATokenizer,
         mask_probability: float = 0.15,
         seed: int = 13,
+        reverse_complement_prob: float = 0.0,
     ) -> None:
         self.windows = list(windows)
         self.tokenizer = tokenizer
         self.mask_probability = mask_probability
+        self.reverse_complement_prob = reverse_complement_prob
         self.rng = np.random.default_rng(seed)
+
+        # Complement lookup for A<->T, C<->G, N stays N (ids per DNATokenizer vocab).
+        complement = np.arange(tokenizer.vocab_size)
+        complement[tokenizer.vocab["A"]] = tokenizer.vocab["T"]
+        complement[tokenizer.vocab["T"]] = tokenizer.vocab["A"]
+        complement[tokenizer.vocab["C"]] = tokenizer.vocab["G"]
+        complement[tokenizer.vocab["G"]] = tokenizer.vocab["C"]
+        self._complement_lut = complement
 
     def __len__(self) -> int:
         return len(self.windows)
@@ -116,6 +126,10 @@ class DNAMaskedLMDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str | int | float]:
         window = self.windows[idx]
         token_ids = np.array(self.tokenizer.encode(window.sequence), dtype=np.int64)
+
+        if self.reverse_complement_prob > 0 and self.rng.random() < self.reverse_complement_prob:
+            token_ids = self._complement_lut[token_ids][::-1].copy()
+
         input_ids, labels = self._mask_tokens(token_ids)
 
         return {
