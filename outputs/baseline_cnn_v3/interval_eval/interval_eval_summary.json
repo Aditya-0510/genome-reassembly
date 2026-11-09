@@ -1,0 +1,14 @@
+{
+  "repeat_threshold": 0.2,
+  "predicted_probability_threshold": 0.5,
+  "n_test_windows": 1000,
+  "total_evaluated_bp": 512000,
+  "total_true_repeat_bp": 161471,
+  "total_predicted_repeat_bp": 240128,
+  "total_overlap_bp": 135609,
+  "overall_precision": 0.5647363073027718,
+  "overall_recall": 0.8398350168141647,
+  "overall_iou": 0.5098274371216963,
+  "overall_f1": 0.6753453071347288,
+  "runtime_seconds": 17.622278213500977
+}
