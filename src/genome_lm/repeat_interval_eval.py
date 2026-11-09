@@ -33,6 +33,15 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Classifier probability cutoff for calling a window predicted-repeat.",
     )
+    parser.add_argument(
+        "--threshold-sweep",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated probability cutoffs (e.g. 0.3,0.4,0.5,0.6,0.7,0.8) "
+            "to investigate the precision/recall tradeoff. Writes threshold_sweep_summary.csv."
+        ),
+    )
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument(
@@ -271,6 +280,54 @@ def main() -> None:
 
     with (output_dir / "interval_eval_summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+    if args.threshold_sweep:
+        thresholds = [float(t.strip()) for t in args.threshold_sweep.split(",") if t.strip()]
+        sweep_rows = []
+        for threshold in thresholds:
+            sweep_overlap_bp = 0
+            sweep_pred_bp = 0
+            sweep_true_bp = 0
+            for sid in unique_seq_ids:
+                mask = test_seq_id == sid
+                pred_mask = mask & (test_prob >= threshold)
+                pred_spans = list(
+                    zip(test_starts[pred_mask].tolist(), test_ends[pred_mask].tolist())
+                )
+                pred_region_t = merge_intervals(pred_spans)
+                true_region_sid = merge_intervals(
+                    intersect_intervals(true_region.get(sid, []), evaluated_region[sid])
+                )
+                overlap_t = intersect_intervals(pred_region_t, true_region_sid)
+                sweep_overlap_bp += total_bp(overlap_t)
+                sweep_pred_bp += total_bp(pred_region_t)
+                sweep_true_bp += total_bp(true_region_sid)
+
+            sweep_union_bp = sweep_pred_bp + sweep_true_bp - sweep_overlap_bp
+            p = sweep_overlap_bp / sweep_pred_bp if sweep_pred_bp > 0 else float("nan")
+            r = sweep_overlap_bp / sweep_true_bp if sweep_true_bp > 0 else float("nan")
+            i = sweep_overlap_bp / sweep_union_bp if sweep_union_bp > 0 else float("nan")
+            f1_t = (
+                2 * p * r / (p + r) if (p + r) > 0 and not np.isnan(p) and not np.isnan(r) else float("nan")
+            )
+            sweep_rows.append(
+                {
+                    "probability_threshold": threshold,
+                    "predicted_repeat_bp": sweep_pred_bp,
+                    "true_repeat_bp": sweep_true_bp,
+                    "overlap_bp": sweep_overlap_bp,
+                    "precision": p,
+                    "recall": r,
+                    "iou": i,
+                    "f1": f1_t,
+                }
+            )
+
+        sweep_df = pd.DataFrame(sweep_rows)
+        sweep_path = output_dir / "threshold_sweep_summary.csv"
+        sweep_df.to_csv(sweep_path, index=False)
+        print(f"\nThreshold sweep complete. Saved: {sweep_path}")
+        print(sweep_df.to_string(index=False))
 
     print("\nInterval-level evaluation complete.")
     print(f"Overall precision={overall_precision:.4f} recall={overall_recall:.4f} "
