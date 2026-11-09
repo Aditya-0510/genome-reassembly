@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--embedding-dim", type=int, default=128)
     parser.add_argument("--channels", type=int, default=256)
-    parser.add_argument("--num-layers", type=int, default=6)
+    parser.add_argument("--num-layers", type=int, default=9)
     parser.add_argument("--dropout", type=float, default=0.1)
 
     parser.add_argument("--val-fraction", type=float, default=0.1)

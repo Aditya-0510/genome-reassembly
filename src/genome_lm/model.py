@@ -35,7 +35,7 @@ class GenomicCNNMLM(nn.Module):
         vocab_size: int,
         embedding_dim: int = 128,
         channels: int = 256,
-        num_layers: int = 6,
+        num_layers: int = 9,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -43,7 +43,9 @@ class GenomicCNNMLM(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.proj_in = nn.Conv1d(embedding_dim, channels, kernel_size=1)
 
-        dilations = [2 ** (i % 4) for i in range(num_layers)]
+        # Dilation grows exponentially (no reset) so receptive field scales with depth;
+        # num_layers ~= log2(window_size) covers the full window (e.g. 9 layers for 512bp).
+        dilations = [2 ** i for i in range(num_layers)]
         self.blocks = nn.ModuleList(
             [DilatedConvBlock(channels=channels, dilation=d, dropout=dropout) for d in dilations]
         )
