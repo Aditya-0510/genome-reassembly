@@ -151,31 +151,7 @@ Motif discovery outputs were generated for all three configurations; v3 shows th
 3. Scale the ClinVar comparison beyond 800 chromosome-1 variants and apply a formal statistical test before drawing strong conclusions
 4. Further architecture experiments (e.g., adding self-attention) now that the dilation bug is fixed and no longer confounds comparisons
 
-## 5. Next Steps and Approach From Now Onwards (2-3 minutes)
-With the architecture bottleneck diagnosed and fixed, and all three external datasets integrated, the next phase focuses on closing the two remaining open limitations: minority-class repeat accuracy and the variant-pathogenicity signal.
-
-### Phase A: Deepen the real-data validation
-1. Rebalance or oversample minority repeat classes (DNA, LTR, Simple_repeat, Low_complexity) to improve multi-class classification.
-2. Widen `--motif-width` to screen the JASPAR motifs currently excluded for being wider than 9bp.
-3. Scale the ClinVar comparison to more variants and apply a formal significance test (e.g. Mann-Whitney U) on the Pathogenic vs Benign LLR distributions.
-
-### Phase B: Interval precision follow-up
-1. Apply the threshold-tuning finding as a default: use probability threshold ~0.8 instead of 0.5 for interval-level repeat calls (closes part of the precision gap for free).
-2. Investigate any remaining boundary over-calling independent of threshold and receptive field.
-
-### Phase C: Further controlled experimentation
-1. Architecture comparison: current fixed-dilation CNN vs a small Transformer/self-attention block.
-2. Context-length experiments: 256 vs 512 vs 1024, now with a receptive field that properly scales with window size.
-3. Masking-rate experiments: 10%, 15%, 20%.
-
-## 6. Expected Deliverables for Next Review (30-45 seconds)
-By the next review, I plan to provide:
-1. Improved minority-class repeat classification after addressing class imbalance.
-2. Motif validation results covering JASPAR motifs wider than 9bp.
-3. A statistically tested, larger-scale ClinVar LLR comparison.
-4. Initial results from a self-attention architecture experiment, now that the dilation bug no longer confounds the comparison.
-
-## 7. Closing (20-30 seconds)
+## 5. Closing (20-30 seconds)
 In summary, the project pipeline is fully implemented end-to-end, and this round of work produced two genuine wins: first, a scaling experiment that initially looked like a dead end led to discovering and fixing a real receptive-field bug in the model architecture, improving every downstream metric; second, integrating real RepeatMasker, JASPAR, and ClinVar data turned every previously-blocked or approximated analysis into a genuine, defensible result — including an honest negative finding on variant pathogenicity scoring, which I'm reporting transparently rather than omitting. The next phase focuses on closing the minority-class and variant-signal gaps.
 
-Thank you. I would appreciate feedback on whether to prioritize improving minority-class repeat classification or scaling up the ClinVar variant-scoring analysis for the next milestone.
+Thank you.

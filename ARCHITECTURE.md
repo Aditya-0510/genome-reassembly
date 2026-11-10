@@ -1,11 +1,5 @@
 # Project Flow Walkthrough
 
-This is a narrated script explaining the project end-to-end, stage by stage — useful
-for explaining the project to someone unfamiliar with the codebase.
-
-## Narrated script — explaining the flow stage by stage
-
-### Opening
 "This project is a self-supervised DNA language model, trained directly on raw human
 genome sequence, with no labels. The goal is to learn a general-purpose representation
 of DNA, then prove that representation is actually useful for real genomic tasks."
