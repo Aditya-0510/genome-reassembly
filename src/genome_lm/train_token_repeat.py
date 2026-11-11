@@ -116,6 +116,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--pos-weight",
+        type=float,
+        default=None,
+        help=(
+            "Positive-class weight for BCE loss. If omitted, auto-computed from train "
+            "token imbalance as neg_tokens/pos_tokens (clipped to [1, 50])."
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default="outputs/token_repeat_cnn")
     return parser.parse_args()
 
@@ -222,6 +231,25 @@ def main() -> None:
     val_windows = [windows[int(i)] for i in val_idx]
     print(f"Dataset split: train={len(train_windows)} val={len(val_windows)}")
 
+    train_pos_tokens = int(sum(sum(w.labels) for w in train_windows))
+    train_total_tokens = len(train_windows) * args.window_size
+    train_neg_tokens = int(train_total_tokens - train_pos_tokens)
+
+    if train_pos_tokens == 0:
+        raise RuntimeError("Train split has zero positive repeat tokens. Adjust data/split.")
+
+    if args.pos_weight is None:
+        inferred_pos_weight = train_neg_tokens / max(1, train_pos_tokens)
+        pos_weight_value = float(min(max(inferred_pos_weight, 1.0), 50.0))
+    else:
+        pos_weight_value = float(max(args.pos_weight, 1.0))
+
+    print(
+        "Train token balance: "
+        f"repeat={train_pos_tokens} non_repeat={train_neg_tokens} "
+        f"pos_weight={pos_weight_value:.3f}"
+    )
+
     tokenizer = DNATokenizer()
     train_ds = TokenRepeatDataset(train_windows, tokenizer)
     val_ds = TokenRepeatDataset(val_windows, tokenizer)
@@ -248,7 +276,9 @@ def main() -> None:
         dropout=args.dropout,
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor(pos_weight_value, device=device, dtype=torch.float32)
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     output_dir = Path(args.output_dir)
@@ -316,6 +346,9 @@ def main() -> None:
         "num_train": int(len(train_windows)),
         "num_val": int(len(val_windows)),
         "repeat_token_fraction": float(total_repeat_tokens / max(1, total_tokens)),
+        "train_repeat_tokens": int(train_pos_tokens),
+        "train_non_repeat_tokens": int(train_neg_tokens),
+        "loss_pos_weight": float(pos_weight_value),
         "best_val_f1": float(best_val_f1),
         "runtime_seconds": float(time.time() - start),
     }

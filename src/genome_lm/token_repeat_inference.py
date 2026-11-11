@@ -218,8 +218,14 @@ class TokenRepeatInferenceService:
             np.maximum(pos_count, 1),
             dtype=np.float32,
         )
+        position_score_mean = float(np.mean(position_scores))
+        position_score_max = float(np.max(position_scores))
+        positive_bp_raw = int(np.sum(position_scores >= self.config.position_probability_threshold))
         repeat_intervals = self._intervals_from_position_scores(position_scores)
-        repeat_intervals = filter_intervals_by_length(repeat_intervals, self.config.min_interval_bp)
+        repeat_intervals = filter_intervals_by_length(
+            repeat_intervals,
+            self.config.min_interval_bp,
+        )
 
         total_repeat_bp = interval_total_bp(repeat_intervals)
         repeat_fraction = total_repeat_bp / len(normalized_seq)
@@ -260,6 +266,11 @@ class TokenRepeatInferenceService:
                 "model_type": "token_repeat_cnn",
                 "position_probability_threshold": float(self.config.position_probability_threshold),
                 "min_interval_bp": int(self.config.min_interval_bp),
+                "position_score_mean": position_score_mean,
+                "position_score_max": position_score_max,
+                "positive_bp_raw": positive_bp_raw,
+                "model_predicted_repeat_intervals": int(len(repeat_intervals)),
+                "heuristic_repeat_intervals": 0,
                 "predicted_repeat_intervals": int(len(repeat_intervals)),
                 "total_repeat_bp": int(total_repeat_bp),
                 "repeat_fraction": float(repeat_fraction),

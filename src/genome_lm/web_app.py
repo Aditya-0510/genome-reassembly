@@ -37,11 +37,17 @@ def get_token_service() -> TokenRepeatInferenceService:
     token_checkpoint_path = os.getenv("GENOME_TOKEN_CHECKPOINT", DEFAULT_TOKEN_CHECKPOINT)
     window_size = int(os.getenv("GENOME_WINDOW_SIZE", "512"))
     stride = int(os.getenv("GENOME_STRIDE", "64"))
+    position_threshold = float(os.getenv("GENOME_POSITION_THRESHOLD", "0.35"))
+    min_interval_bp = int(os.getenv("GENOME_MIN_INTERVAL_BP", "4"))
+    min_repeat_fraction = float(os.getenv("GENOME_MIN_REPEAT_FRACTION", "0.02"))
 
     config = TokenRepeatInferenceConfig(
         checkpoint_path=token_checkpoint_path,
         window_size=window_size,
         stride=stride,
+        position_probability_threshold=position_threshold,
+        min_interval_bp=min_interval_bp,
+        min_repeat_fraction_positive=min_repeat_fraction,
     )
     return TokenRepeatInferenceService(config)
 
