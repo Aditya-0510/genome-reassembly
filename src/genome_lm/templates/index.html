@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Genome Repeat Explorer</title>
+  <style>
+    :root {
+      --bg: #f4f2ea;
+      --panel: #fffdf6;
+      --ink: #1b2a22;
+      --muted: #4e5c53;
+      --accent: #0f7b6c;
+      --accent-2: #e9f5f3;
+      --danger: #9f2d2d;
+      --border: #d7d2c4;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 10%, #e4efe7 0%, transparent 35%),
+        radial-gradient(circle at 85% 90%, #e6efe9 0%, transparent 35%),
+        var(--bg);
+      line-height: 1.45;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.2rem;
+    }
+
+    .hero {
+      background: linear-gradient(130deg, #edf4ef, #f8f6ef);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.1rem;
+      box-shadow: 0 12px 30px rgba(23, 35, 29, 0.08);
+      margin-bottom: 1rem;
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.75rem;
+      letter-spacing: 0.3px;
+    }
+
+    .sub {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 0.4rem;
+      font-weight: 600;
+    }
+
+    textarea,
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #c7c1b3;
+      border-radius: 10px;
+      padding: 0.7rem;
+      font-size: 0.96rem;
+      background: #ffffff;
+      color: var(--ink);
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      font-family: "Consolas", "Courier New", monospace;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 0.6rem;
+      margin-top: 0.9rem;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      padding: 0.65rem 0.95rem;
+      border-radius: 10px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .error {
+      background: #fff2f2;
+      border: 1px solid #f1c5c5;
+      color: var(--danger);
+      padding: 0.75rem;
+      border-radius: 10px;
+      white-space: pre-wrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.7rem;
+      margin-top: 0.5rem;
+    }
+
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.7rem;
+      background: var(--accent-2);
+    }
+
+    .metric .label {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .metric .value {
+      margin-top: 0.2rem;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.55rem;
+      font-size: 0.91rem;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid #d7d2c4;
+      text-align: left;
+      padding: 0.45rem;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    th {
+      background: #f0ebde;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <h1>Genome Repeat Explorer</h1>
+      <p class="sub">Enter a DNA sequence and get repeat intervals, repeat counts, repeated segments, and optional query-subsequence repeat checks.</p>
+    </section>
+
+    <section class="panel">
+      <form method="post" action="/analyze">
+        <label for="sequence">DNA sequence (A/C/G/T/N)</label>
+        <textarea id="sequence" name="sequence" placeholder="Paste DNA sequence here..." required>{{ input_sequence }}</textarea>
+
+        <label for="query_subsequence" style="margin-top:0.7rem;">Optional subsequence to check (Is this sequence repeated?)</label>
+        <input id="query_subsequence" name="query_subsequence" type="text" value="{{ query_subsequence }}" placeholder="Example: ATATATAT" />
+
+        <div class="button-row">
+          <button type="submit">Analyze Sequence</button>
+        </div>
+      </form>
+    </section>
+
+    {% if error %}
+    <section class="panel">
+      <div class="error">{{ error }}</div>
+    </section>
+    {% endif %}
+
+    {% if result %}
+    <section class="panel">
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="metric"><div class="label">Repeated?</div><div class="value">{{ "Yes" if result.sequence_summary.is_repeated else "No" }}</div></div>
+        <div class="metric"><div class="label">Sequence length</div><div class="value">{{ result.sequence_summary.length }}</div></div>
+        <div class="metric"><div class="label">Predicted repeat intervals</div><div class="value">{{ result.sequence_summary.predicted_repeat_intervals }}</div></div>
+        <div class="metric"><div class="label">Total repeat bp</div><div class="value">{{ result.sequence_summary.total_repeat_bp }}</div></div>
+        <div class="metric"><div class="label">Repeat fraction</div><div class="value">{{ "%.4f"|format(result.sequence_summary.repeat_fraction) }}</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Predicted Repeat Intervals</h2>
+      {% if result.repeat_intervals %}
+      <table>
+        <thead>
+          <tr>
+            <th>Start</th>
+            <th>End</th>
+            <th>Length</th>
+            <th>Sequence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in result.repeat_intervals %}
+          <tr>
+            <td>{{ row.start }}</td>
+            <td>{{ row.end }}</td>
+            <td>{{ row.length }}</td>
+            <td>{{ row.sequence }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p>No repeat intervals were predicted for this sequence.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>Top Repeated Segments</h2>
+      {% if result.repeated_segments %}
+      <table>
+        <thead>
+          <tr>
+            <th>Repeated sequence</th>
+            <th>Count</th>
+            <th>First position</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in result.repeated_segments %}
+          <tr>
+            <td>{{ row.repeat_unit }}</td>
+            <td>{{ row.count }}</td>
+            <td>{{ row.first_position }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p>No repeated segments found with current settings.</p>
+      {% endif %}
+    </section>
+
+    {% if result.query_result %}
+    <section class="panel">
+      <h2>Query Subsequence Result</h2>
+      {% if result.query_result.error %}
+      <div class="error">{{ result.query_result.error }}</div>
+      {% else %}
+      <div class="grid">
+        <div class="metric"><div class="label">Query</div><div class="value">{{ result.query_result.query_subsequence }}</div></div>
+        <div class="metric"><div class="label">Count in full sequence</div><div class="value">{{ result.query_result.count_in_sequence }}</div></div>
+        <div class="metric"><div class="label">Count in predicted repeat intervals</div><div class="value">{{ result.query_result.count_in_predicted_repeat_intervals }}</div></div>
+        <div class="metric"><div class="label">Repeated?</div><div class="value">{{ "Yes" if result.query_result.is_repeated else "No" }}</div></div>
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+    {% endif %}
+  </div>
+</body>
+</html>
