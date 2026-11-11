@@ -3,84 +3,139 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
+from Bio import SeqIO
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from .data import DNAWindow, build_windows
-from .direct_repeat_model import DirectRepeatCNN
+from .token_repeat_model import TokenRepeatCNN
 from .tokenizer import DNATokenizer
 
 
-class RepeatWindowDataset(Dataset):
-    def __init__(
-        self,
-        windows: list[DNAWindow],
-        tokenizer: DNATokenizer,
-        repeat_label_threshold: float,
-    ) -> None:
+@dataclass(frozen=True)
+class TokenLabeledWindow:
+    sequence: str
+    labels: list[int]
+
+
+class TokenRepeatDataset(Dataset):
+    def __init__(self, windows: list[TokenLabeledWindow], tokenizer: DNATokenizer) -> None:
         self.windows = windows
         self.tokenizer = tokenizer
-        self.repeat_label_threshold = repeat_label_threshold
 
     def __len__(self) -> int:
         return len(self.windows)
 
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        window = self.windows[index]
-        tokens = torch.tensor(self.tokenizer.encode(window.sequence), dtype=torch.long)
-        label = float(window.repeat_fraction >= self.repeat_label_threshold)
-        return {
-            "input_ids": tokens,
-            "label": torch.tensor(label, dtype=torch.float32),
-        }
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        window = self.windows[idx]
+        input_ids = torch.tensor(self.tokenizer.encode(window.sequence), dtype=torch.long)
+        labels = torch.tensor(window.labels, dtype=torch.float32)
+        return {"input_ids": input_ids, "labels": labels}
+
+
+def resolve_fasta_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.exists():
+        return path
+
+    if len(path.parts) == 1:
+        candidates = [
+            Path("dataset") / "ncbi_dataset" / "data" / "GCF_000001405.40" / path.name,
+            Path("dataset") / path.name,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        dataset_root = Path("dataset")
+        if dataset_root.exists():
+            for found in dataset_root.rglob(path.name):
+                if found.is_file():
+                    return found
+
+    raise FileNotFoundError(
+        f"FASTA file not found: {raw_path}\n"
+        "Tip: pass workspace-relative path like:\n"
+        "dataset/ncbi_dataset/data/GCF_000001405.40/GCF_000001405.40_GRCh38.p14_genomic.fna"
+    )
+
+
+def build_token_windows(
+    fasta_path: Path,
+    window_size: int,
+    stride: int,
+    max_windows: int | None,
+    min_acgt_fraction: float,
+) -> list[TokenLabeledWindow]:
+    windows: list[TokenLabeledWindow] = []
+    produced = 0
+    for record in SeqIO.parse(str(fasta_path), "fasta"):
+        raw = str(record.seq)
+        upper = raw.upper()
+        for start in range(0, max(0, len(upper) - window_size + 1), stride):
+            end = start + window_size
+            window_upper = upper[start:end]
+            if len(window_upper) != window_size:
+                continue
+
+            acgt = sum(1 for ch in window_upper if ch in {"A", "C", "G", "T"})
+            if (acgt / window_size) < min_acgt_fraction:
+                continue
+
+            window_raw = raw[start:end]
+            labels = [1 if ch.islower() else 0 for ch in window_raw]
+            windows.append(TokenLabeledWindow(sequence=window_upper, labels=labels))
+            produced += 1
+
+            if max_windows is not None and produced >= max_windows:
+                return windows
+    return windows
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train direct repeat classifier on DNA windows.")
+    parser = argparse.ArgumentParser(description="Train token-level repeat labeling model.")
     parser.add_argument("--fasta", type=str, required=True)
     parser.add_argument("--window-size", type=int, default=512)
     parser.add_argument("--stride", type=int, default=64)
-    parser.add_argument("--max-windows", type=int, default=25000)
+    parser.add_argument("--max-windows", type=int, default=50000)
     parser.add_argument("--min-acgt-fraction", type=float, default=0.9)
-    parser.add_argument("--repeat-label-threshold", type=float, default=0.2)
 
     parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--channels", type=int, default=128)
-    parser.add_argument("--num-layers", type=int, default=4)
+    parser.add_argument("--num-layers", type=int, default=5)
     parser.add_argument("--dropout", type=float, default=0.1)
 
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--output-dir", type=str, default="outputs/direct_repeat_cnn")
+    parser.add_argument("--output-dir", type=str, default="outputs/token_repeat_cnn")
     return parser.parse_args()
 
 
-def compute_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float) -> dict[str, float]:
+def metrics_from_probs(probs: np.ndarray, labels: np.ndarray, threshold: float) -> dict[str, float]:
     preds = (probs >= threshold).astype(np.int64)
-    labels_i = labels.astype(np.int64)
+    y = labels.astype(np.int64)
 
-    tp = int(np.sum((preds == 1) & (labels_i == 1)))
-    tn = int(np.sum((preds == 0) & (labels_i == 0)))
-    fp = int(np.sum((preds == 1) & (labels_i == 0)))
-    fn = int(np.sum((preds == 0) & (labels_i == 1)))
+    tp = int(np.sum((preds == 1) & (y == 1)))
+    tn = int(np.sum((preds == 0) & (y == 0)))
+    fp = int(np.sum((preds == 1) & (y == 0)))
+    fn = int(np.sum((preds == 0) & (y == 1)))
 
-    total = max(1, len(labels_i))
-    accuracy = (tp + tn) / total
+    total = max(1, len(y))
+    acc = (tp + tn) / total
     precision = tp / max(1, tp + fp)
     recall = tp / max(1, tp + fn)
     f1 = 2 * precision * recall / max(1e-12, precision + recall)
-
     return {
-        "accuracy": float(accuracy),
+        "accuracy": float(acc),
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
@@ -88,13 +143,13 @@ def compute_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float) -> 
 
 
 def evaluate(
-    model: DirectRepeatCNN,
+    model: TokenRepeatCNN,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
 ) -> tuple[float, dict[str, float]]:
     model.eval()
-    total_loss = 0.0
+    loss_sum = 0.0
     batches = 0
     all_probs: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
@@ -102,15 +157,16 @@ def evaluate(
     with torch.no_grad():
         for batch in loader:
             input_ids = batch["input_ids"].to(device)
-            labels = batch["label"].to(device)
+            labels = batch["labels"].to(device)
             logits = model(input_ids)
             loss = criterion(logits, labels)
 
-            probs = torch.sigmoid(logits).cpu().numpy()
+            probs = torch.sigmoid(logits).cpu().numpy().reshape(-1)
+            y = labels.cpu().numpy().reshape(-1)
             all_probs.append(probs)
-            all_labels.append(labels.cpu().numpy())
+            all_labels.append(y)
 
-            total_loss += float(loss.item())
+            loss_sum += float(loss.item())
             batches += 1
 
     if batches == 0:
@@ -118,7 +174,7 @@ def evaluate(
 
     probs_np = np.concatenate(all_probs, axis=0)
     labels_np = np.concatenate(all_labels, axis=0)
-    return total_loss / batches, compute_metrics(probs_np, labels_np, threshold=0.5)
+    return loss_sum / batches, metrics_from_probs(probs_np, labels_np, threshold=0.5)
 
 
 def main() -> None:
@@ -127,19 +183,19 @@ def main() -> None:
     np.random.seed(args.seed)
     start = time.time()
 
+    fasta_path = resolve_fasta_path(args.fasta)
     print("=" * 72)
-    print("Starting direct repeat classifier training")
-    print(f"FASTA: {args.fasta}")
+    print("Starting token-level repeat model training")
+    print(f"FASTA: {fasta_path}")
     print(
         "Config: "
         f"window={args.window_size}, stride={args.stride}, max_windows={args.max_windows}, "
-        f"repeat_label_threshold={args.repeat_label_threshold}, epochs={args.epochs}"
+        f"epochs={args.epochs}"
     )
     print("=" * 72)
 
-    tokenizer = DNATokenizer()
-    windows = build_windows(
-        fasta_path=args.fasta,
+    windows = build_token_windows(
+        fasta_path=fasta_path,
         window_size=args.window_size,
         stride=args.stride,
         max_windows=args.max_windows,
@@ -148,34 +204,27 @@ def main() -> None:
     if not windows:
         raise RuntimeError("No windows generated. Check FASTA path or relax filters.")
 
-    y = np.array([float(w.repeat_fraction >= args.repeat_label_threshold) for w in windows])
-    positives = int(np.sum(y))
-    negatives = int(len(y) - positives)
-    print(f"Generated windows: {len(windows)} | repeats={positives} non_repeats={negatives}")
-    if positives == 0 or negatives == 0:
-        raise RuntimeError("Training labels are single-class. Adjust threshold/data.")
+    total_tokens = len(windows) * args.window_size
+    total_repeat_tokens = int(sum(sum(w.labels) for w in windows))
+    print(
+        f"Generated windows: {len(windows)} | repeat_token_fraction="
+        f"{(total_repeat_tokens / max(1, total_tokens)):.4f}"
+    )
 
-    indices = np.arange(len(windows))
-    pos_idx = indices[y == 1]
-    neg_idx = indices[y == 0]
+    idx = np.arange(len(windows))
     rng = np.random.default_rng(args.seed)
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-
-    pos_val = max(1, int(len(pos_idx) * args.val_fraction))
-    neg_val = max(1, int(len(neg_idx) * args.val_fraction))
-    val_idx = np.concatenate([pos_idx[:pos_val], neg_idx[:neg_val]])
-    train_idx = np.concatenate([pos_idx[pos_val:], neg_idx[neg_val:]])
-    rng.shuffle(val_idx)
-    rng.shuffle(train_idx)
+    rng.shuffle(idx)
+    val_size = max(1, int(len(idx) * args.val_fraction))
+    val_idx = idx[:val_size]
+    train_idx = idx[val_size:]
 
     train_windows = [windows[int(i)] for i in train_idx]
     val_windows = [windows[int(i)] for i in val_idx]
-
     print(f"Dataset split: train={len(train_windows)} val={len(val_windows)}")
 
-    train_ds = RepeatWindowDataset(train_windows, tokenizer, args.repeat_label_threshold)
-    val_ds = RepeatWindowDataset(val_windows, tokenizer, args.repeat_label_threshold)
+    tokenizer = DNATokenizer()
+    train_ds = TokenRepeatDataset(train_windows, tokenizer)
+    val_ds = TokenRepeatDataset(val_windows, tokenizer)
 
     train_loader = DataLoader(
         train_ds,
@@ -191,7 +240,7 @@ def main() -> None:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DirectRepeatCNN(
+    model = TokenRepeatCNN(
         vocab_size=tokenizer.vocab_size,
         embedding_dim=args.embedding_dim,
         channels=args.channels,
@@ -205,8 +254,8 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    history: list[dict[str, float | int]] = []
     best_val_f1 = -1.0
+    history: list[dict[str, float | int]] = []
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -216,7 +265,7 @@ def main() -> None:
 
         for batch in train_loader:
             input_ids = batch["input_ids"].to(device)
-            labels = batch["label"].to(device)
+            labels = batch["labels"].to(device)
 
             optimizer.zero_grad()
             logits = model(input_ids)
@@ -229,7 +278,6 @@ def main() -> None:
 
         train_loss = running_loss / max(1, batches)
         val_loss, val_metrics = evaluate(model, val_loader, criterion, device)
-
         row = {
             "epoch": epoch,
             "train_loss": train_loss,
@@ -267,8 +315,7 @@ def main() -> None:
         "num_windows": int(len(windows)),
         "num_train": int(len(train_windows)),
         "num_val": int(len(val_windows)),
-        "repeat_windows": int(positives),
-        "non_repeat_windows": int(negatives),
+        "repeat_token_fraction": float(total_repeat_tokens / max(1, total_tokens)),
         "best_val_f1": float(best_val_f1),
         "runtime_seconds": float(time.time() - start),
     }

@@ -60,24 +60,24 @@ python -m src.genome_lm.repeat_baseline \
   --embeddings outputs/baseline_cnn/embeddings.npz
 ```
 
-## Direct repeat model (recommended for repeat finding)
+## Token-level repeat labeling model (recommended for interval quality)
 
-This model is trained directly for repeat vs non-repeat classification from sequence windows,
-instead of relying on MLM embeddings as an indirect feature stage.
+This model predicts repeat probability per base and then merges contiguous positive bases
+into repeat intervals, which usually gives cleaner interval boundaries.
 
 ```bash
-python -m src.genome_lm.train_direct_repeat \
+python -m src.genome_lm.train_token_repeat \
   --fasta dataset/ncbi_dataset/data/GCF_000001405.40/GCF_000001405.40_GRCh38.p14_genomic.fna \
   --window-size 512 \
   --stride 64 \
-  --max-windows 25000 \
-  --epochs 5 \
-  --output-dir outputs/direct_repeat_cnn
+  --max-windows 50000 \
+  --epochs 6 \
+  --output-dir outputs/token_repeat_cnn
 ```
 
 Main artifact:
 
-- `outputs/direct_repeat_cnn/best_model.pt`
+- `outputs/token_repeat_cnn/best_model.pt`
 
 ## Robustness sweep for repeat baseline
 
@@ -194,13 +194,8 @@ Then open:
 
 Optional environment overrides:
 
-- `GENOME_CHECKPOINT` (default: `outputs/baseline_cnn_v3/best_model.pt`)
-- `GENOME_EMBEDDINGS` (default: `outputs/baseline_cnn_v3/embeddings.npz`)
-- `GENOME_DIRECT_CHECKPOINT` (default: `outputs/direct_repeat_cnn/best_model.pt`)
+- `GENOME_TOKEN_CHECKPOINT` (default: `outputs/token_repeat_cnn/best_model.pt`)
 - `GENOME_WINDOW_SIZE` (default: `512`)
-- `GENOME_STRIDE` (default: `512`)
+- `GENOME_STRIDE` (default: `64`)
 
-In the web UI, choose the repeat model from the dropdown:
-
-- `direct` = Direct repeat CNN (recommended)
-- `mlm` = MLM embeddings + logistic classifier
+Web serving is now token-model only (Token-level repeat CNN).

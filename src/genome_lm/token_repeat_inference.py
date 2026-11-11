@@ -2,30 +2,24 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from sklearn.linear_model import LogisticRegression
 
-from .model import GenomicCNNMLM
+from .token_repeat_model import TokenRepeatCNN
 from .tokenizer import DNATokenizer
 
 
-logger = logging.getLogger(__name__)
-
-
 @dataclass(frozen=True)
-class RepeatInferenceConfig:
+class TokenRepeatInferenceConfig:
     checkpoint_path: str
-    embeddings_path: str
     window_size: int = 512
-    stride: int = 512
+    stride: int = 64
     min_acgt_fraction: float = 0.9
-    repeat_label_threshold: float = 0.2
-    predicted_probability_threshold: float = 0.5
+    position_probability_threshold: float = 0.5
+    min_interval_bp: int = 8
     min_repeat_fraction_positive: float = 0.05
     kmer_size: int = 9
     top_k_segments: int = 10
@@ -64,17 +58,25 @@ def count_subsequence(sequence: str, query_subsequence: str) -> int:
     return count
 
 
-class RepeatInferenceService:
-    def __init__(self, config: RepeatInferenceConfig) -> None:
+def filter_intervals_by_length(
+    intervals: list[tuple[int, int]],
+    min_length: int,
+) -> list[tuple[int, int]]:
+    if min_length <= 1:
+        return intervals
+    return [(start, end) for start, end in intervals if (end - start) >= min_length]
+
+
+class TokenRepeatInferenceService:
+    def __init__(self, config: TokenRepeatInferenceConfig) -> None:
         self.config = config
         self.tokenizer = DNATokenizer()
         self.model = self._load_model(config.checkpoint_path)
-        self.classifier = self._fit_classifier(config.embeddings_path)
 
-    def _load_model(self, checkpoint_path: str) -> GenomicCNNMLM:
+    def _load_model(self, checkpoint_path: str) -> TokenRepeatCNN:
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         train_args = ckpt["args"]
-        model = GenomicCNNMLM(
+        model = TokenRepeatCNN(
             vocab_size=self.tokenizer.vocab_size,
             embedding_dim=train_args["embedding_dim"],
             channels=train_args["channels"],
@@ -84,22 +86,6 @@ class RepeatInferenceService:
         model.load_state_dict(ckpt["model_state"])
         model.eval()
         return model
-
-    def _fit_classifier(self, embeddings_path: str) -> LogisticRegression:
-        data = np.load(embeddings_path, allow_pickle=True)
-        x = data["embeddings"]
-        repeat_fraction = data["repeat_fraction"]
-        y = (repeat_fraction >= self.config.repeat_label_threshold).astype(int)
-
-        if len(np.unique(y)) < 2:
-            raise ValueError(
-                "Embeddings labels contain only one class. "
-                "Use a dataset with both repeat and non-repeat windows."
-            )
-
-        clf = LogisticRegression(max_iter=1000, random_state=13)
-        clf.fit(x, y)
-        return clf
 
     def normalize_sequence(self, sequence: str) -> str:
         return "".join(sequence.upper().split())
@@ -112,9 +98,7 @@ class RepeatInferenceService:
 
         invalid = sorted({ch for ch in sequence if ch not in {"A", "C", "G", "T", "N"}})
         if invalid:
-            errors.append(
-                "Sequence contains unsupported characters: " + ", ".join(invalid)
-            )
+            errors.append("Sequence contains unsupported characters: " + ", ".join(invalid))
 
         if len(sequence) < self.config.window_size:
             errors.append(
@@ -129,27 +113,38 @@ class RepeatInferenceService:
             end = start + self.config.window_size
             window_seq = sequence[start:end]
 
-            acgt_count = sum(1 for ch in window_seq if ch in {"A", "C", "G", "T"})
-            if (acgt_count / self.config.window_size) < self.config.min_acgt_fraction:
+            acgt = sum(1 for ch in window_seq if ch in {"A", "C", "G", "T"})
+            if (acgt / self.config.window_size) < self.config.min_acgt_fraction:
                 continue
-
             windows.append((start, end, window_seq))
         return windows
 
-    def _embed_windows(self, windows: list[tuple[int, int, str]]) -> np.ndarray:
-        embedding_list: list[np.ndarray] = []
+    def _predict_token_probs(self, windows: list[tuple[int, int, str]]) -> list[np.ndarray]:
+        outputs: list[np.ndarray] = []
         with torch.no_grad():
             for batch_start in range(0, len(windows), self.config.batch_size):
                 batch = windows[batch_start : batch_start + self.config.batch_size]
-                token_batch = [self.tokenizer.encode(window_seq) for _, _, window_seq in batch]
-                input_tensor = torch.tensor(token_batch, dtype=torch.long)
-                _, token_embeddings = self.model(input_tensor, return_embeddings=True)
-                pooled = token_embeddings.mean(dim=1).cpu().numpy()
-                embedding_list.append(pooled)
+                tokens = [self.tokenizer.encode(seq) for _, _, seq in batch]
+                input_tensor = torch.tensor(tokens, dtype=torch.long)
+                logits = self.model(input_tensor)
+                probs = torch.sigmoid(logits).cpu().numpy()
+                for row in probs:
+                    outputs.append(row.astype(np.float32))
+        return outputs
 
-        if not embedding_list:
-            return np.empty((0, 1), dtype=np.float32)
-        return np.concatenate(embedding_list, axis=0)
+    def _intervals_from_position_scores(self, position_scores: np.ndarray) -> list[tuple[int, int]]:
+        intervals: list[tuple[int, int]] = []
+        start: int | None = None
+        for i, score in enumerate(position_scores):
+            if score >= self.config.position_probability_threshold:
+                if start is None:
+                    start = i
+            elif start is not None:
+                intervals.append((start, i))
+                start = None
+        if start is not None:
+            intervals.append((start, len(position_scores)))
+        return merge_intervals(intervals)
 
     def _extract_top_segments(
         self,
@@ -169,9 +164,9 @@ class RepeatInferenceService:
                 if "N" in kmer:
                     continue
                 counter[kmer] += 1
-                global_pos = start + i
+                pos = start + i
                 if kmer not in first_positions:
-                    first_positions[kmer] = global_pos
+                    first_positions[kmer] = pos
 
         rows: list[dict[str, Any]] = []
         for repeat_unit, count in counter.most_common(self.config.top_k_segments):
@@ -184,112 +179,51 @@ class RepeatInferenceService:
             )
         return rows
 
-    def _find_tandem_repeat_intervals(self, sequence: str) -> list[tuple[int, int]]:
-        """Detect simple tandem repeats for obvious repeated-sequence cases.
-
-        This complements the learned classifier, which is trained on soft-masked genomic labels.
-        """
-        intervals: list[tuple[int, int]] = []
-        n = len(sequence)
-        min_unit = 2
-        max_unit = min(12, max(min_unit, n // 3))
-        min_copies = 3
-
-        i = 0
-        while i < n:
-            best_end = i
-            for unit in range(min_unit, max_unit + 1):
-                if i + unit * min_copies > n:
-                    continue
-                motif = sequence[i : i + unit]
-                if "N" in motif:
-                    continue
-
-                j = i + unit
-                copies = 1
-                while j + unit <= n and sequence[j : j + unit] == motif:
-                    copies += 1
-                    j += unit
-
-                if copies >= min_copies and j > best_end:
-                    best_end = j
-
-            if best_end > i:
-                intervals.append((i, best_end))
-                i = best_end
-            else:
-                i += 1
-
-        return merge_intervals(intervals)
-
     def predict(self, sequence: str, query_subsequence: str | None = None) -> dict[str, Any]:
         normalized_seq = self.normalize_sequence(sequence)
         errors = self.validate_sequence(normalized_seq)
         if errors:
-            logger.warning("Repeat inference validation failed: %s", "; ".join(errors))
             return {"errors": errors}
 
         windows = self._build_windows(normalized_seq)
         if not windows:
-            logger.warning(
-                "Repeat inference produced no windows: length=%d window_size=%d stride=%d",
-                len(normalized_seq),
-                self.config.window_size,
-                self.config.stride,
-            )
             return {
                 "errors": [
                     "No valid windows were produced. Lower min_acgt_fraction or provide a longer sequence."
                 ]
             }
 
-        window_embeddings = self._embed_windows(windows)
-        probs = self.classifier.predict_proba(window_embeddings)[:, 1]
+        token_probs_by_window = self._predict_token_probs(windows)
 
+        pos_sum = np.zeros(len(normalized_seq), dtype=np.float32)
+        pos_count = np.zeros(len(normalized_seq), dtype=np.int32)
         repeat_windows: list[dict[str, Any]] = []
-        model_repeat_spans: list[tuple[int, int]] = []
 
-        for (start, end, _), prob in zip(windows, probs):
-            is_repeat = bool(prob >= self.config.predicted_probability_threshold)
+        for (start, end, _), token_probs in zip(windows, token_probs_by_window):
+            pos_sum[start:end] += token_probs
+            pos_count[start:end] += 1
+
+            window_prob = float(np.mean(token_probs))
             repeat_windows.append(
                 {
                     "start": int(start),
                     "end": int(end),
-                    "repeat_probability": float(prob),
-                    "is_repeat": is_repeat,
+                    "repeat_probability": window_prob,
+                    "is_repeat": bool(window_prob >= self.config.position_probability_threshold),
                 }
             )
-            if is_repeat:
-                model_repeat_spans.append((start, end))
 
-        model_repeat_intervals = merge_intervals(model_repeat_spans)
-        heuristic_repeat_intervals = self._find_tandem_repeat_intervals(normalized_seq)
-        repeat_intervals = merge_intervals(model_repeat_intervals + heuristic_repeat_intervals)
-
-        if model_repeat_intervals and heuristic_repeat_intervals:
-            source_mode = "model+heuristic"
-        elif model_repeat_intervals:
-            source_mode = "model-only"
-        elif heuristic_repeat_intervals:
-            source_mode = "heuristic-only"
-        else:
-            source_mode = "none"
+        position_scores = np.divide(
+            pos_sum,
+            np.maximum(pos_count, 1),
+            dtype=np.float32,
+        )
+        repeat_intervals = self._intervals_from_position_scores(position_scores)
+        repeat_intervals = filter_intervals_by_length(repeat_intervals, self.config.min_interval_bp)
 
         total_repeat_bp = interval_total_bp(repeat_intervals)
         repeat_fraction = total_repeat_bp / len(normalized_seq)
         repeated = repeat_fraction >= self.config.min_repeat_fraction_positive
-
-        logger.info(
-            "Repeat inference summary: source=%s windows=%d model_intervals=%d heuristic_intervals=%d combined_intervals=%d repeat_bp=%d repeat_fraction=%.4f repeated=%s",
-            source_mode,
-            len(windows),
-            len(model_repeat_intervals),
-            len(heuristic_repeat_intervals),
-            len(repeat_intervals),
-            total_repeat_bp,
-            repeat_fraction,
-            repeated,
-        )
 
         repeated_segments = self._extract_top_segments(normalized_seq, repeat_intervals)
 
@@ -323,8 +257,9 @@ class RepeatInferenceService:
                 "window_size": int(self.config.window_size),
                 "stride": int(self.config.stride),
                 "valid_windows": int(len(windows)),
-                "model_predicted_repeat_intervals": int(len(model_repeat_intervals)),
-                "heuristic_repeat_intervals": int(len(heuristic_repeat_intervals)),
+                "model_type": "token_repeat_cnn",
+                "position_probability_threshold": float(self.config.position_probability_threshold),
+                "min_interval_bp": int(self.config.min_interval_bp),
                 "predicted_repeat_intervals": int(len(repeat_intervals)),
                 "total_repeat_bp": int(total_repeat_bp),
                 "repeat_fraction": float(repeat_fraction),
@@ -345,16 +280,14 @@ class RepeatInferenceService:
         }
 
 
-def build_default_service(
-    checkpoint_path: str = "outputs/baseline_cnn_v3/best_model.pt",
-    embeddings_path: str = "outputs/baseline_cnn_v3/embeddings.npz",
+def build_default_token_service(
+    checkpoint_path: str = "outputs/token_repeat_cnn/best_model.pt",
     window_size: int = 512,
-    stride: int = 512,
-) -> RepeatInferenceService:
-    config = RepeatInferenceConfig(
+    stride: int = 64,
+) -> TokenRepeatInferenceService:
+    config = TokenRepeatInferenceConfig(
         checkpoint_path=str(Path(checkpoint_path)),
-        embeddings_path=str(Path(embeddings_path)),
         window_size=window_size,
         stride=stride,
     )
-    return RepeatInferenceService(config)
+    return TokenRepeatInferenceService(config)
