@@ -1,0 +1,11 @@
+{
+  "num_windows": 50000,
+  "num_train": 42500,
+  "num_val": 7500,
+  "repeat_token_fraction": 0.2790730859375,
+  "train_repeat_tokens": 6082867,
+  "train_non_repeat_tokens": 15677133,
+  "loss_pos_weight": 2.577260525341093,
+  "best_val_f1": 0.8665112980038504,
+  "runtime_seconds": 222.282790184021
+}
