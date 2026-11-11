@@ -152,3 +152,30 @@ python -m src.genome_lm.motif_report \
 - The code keeps chromosome/contig coordinates for each window.
 - Ambiguous bases are preserved as `N` during preprocessing and excluded from MLM loss.
 - This is a baseline scaffold for your phased experimental plan and can be extended with motif and variant scoring modules.
+
+## Web demo: repeat-focused sequence output
+
+This web app gives professor-facing outputs for a user-provided DNA sequence:
+
+- Is the sequence predicted as repeated or not
+- Predicted repeat intervals (start/end/length/sequence)
+- Total repeated base pairs and repeat fraction
+- Top repeated segments and their counts
+- Optional check for a specific subsequence (how many times it appears)
+
+Run the app:
+
+```bash
+uvicorn src.genome_lm.web_app:app --host 127.0.0.1 --port 8000
+```
+
+Then open:
+
+- `http://127.0.0.1:8000`
+
+Optional environment overrides:
+
+- `GENOME_CHECKPOINT` (default: `outputs/baseline_cnn_v3/best_model.pt`)
+- `GENOME_EMBEDDINGS` (default: `outputs/baseline_cnn_v3/embeddings.npz`)
+- `GENOME_WINDOW_SIZE` (default: `512`)
+- `GENOME_STRIDE` (default: `512`)
