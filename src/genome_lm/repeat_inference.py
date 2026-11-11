@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,9 @@ from sklearn.linear_model import LogisticRegression
 
 from .model import GenomicCNNMLM
 from .tokenizer import DNATokenizer
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -180,14 +184,59 @@ class RepeatInferenceService:
             )
         return rows
 
+    def _find_tandem_repeat_intervals(self, sequence: str) -> list[tuple[int, int]]:
+        """Detect simple tandem repeats for obvious repeated-sequence cases.
+
+        This complements the learned classifier, which is trained on soft-masked genomic labels.
+        """
+        intervals: list[tuple[int, int]] = []
+        n = len(sequence)
+        min_unit = 2
+        max_unit = min(12, max(min_unit, n // 3))
+        min_copies = 3
+
+        i = 0
+        while i < n:
+            best_end = i
+            for unit in range(min_unit, max_unit + 1):
+                if i + unit * min_copies > n:
+                    continue
+                motif = sequence[i : i + unit]
+                if "N" in motif:
+                    continue
+
+                j = i + unit
+                copies = 1
+                while j + unit <= n and sequence[j : j + unit] == motif:
+                    copies += 1
+                    j += unit
+
+                if copies >= min_copies and j > best_end:
+                    best_end = j
+
+            if best_end > i:
+                intervals.append((i, best_end))
+                i = best_end
+            else:
+                i += 1
+
+        return merge_intervals(intervals)
+
     def predict(self, sequence: str, query_subsequence: str | None = None) -> dict[str, Any]:
         normalized_seq = self.normalize_sequence(sequence)
         errors = self.validate_sequence(normalized_seq)
         if errors:
+            logger.warning("Repeat inference validation failed: %s", "; ".join(errors))
             return {"errors": errors}
 
         windows = self._build_windows(normalized_seq)
         if not windows:
+            logger.warning(
+                "Repeat inference produced no windows: length=%d window_size=%d stride=%d",
+                len(normalized_seq),
+                self.config.window_size,
+                self.config.stride,
+            )
             return {
                 "errors": [
                     "No valid windows were produced. Lower min_acgt_fraction or provide a longer sequence."
@@ -198,7 +247,7 @@ class RepeatInferenceService:
         probs = self.classifier.predict_proba(window_embeddings)[:, 1]
 
         repeat_windows: list[dict[str, Any]] = []
-        repeat_spans: list[tuple[int, int]] = []
+        model_repeat_spans: list[tuple[int, int]] = []
 
         for (start, end, _), prob in zip(windows, probs):
             is_repeat = bool(prob >= self.config.predicted_probability_threshold)
@@ -211,12 +260,36 @@ class RepeatInferenceService:
                 }
             )
             if is_repeat:
-                repeat_spans.append((start, end))
+                model_repeat_spans.append((start, end))
 
-        repeat_intervals = merge_intervals(repeat_spans)
+        model_repeat_intervals = merge_intervals(model_repeat_spans)
+        heuristic_repeat_intervals = self._find_tandem_repeat_intervals(normalized_seq)
+        repeat_intervals = merge_intervals(model_repeat_intervals + heuristic_repeat_intervals)
+
+        if model_repeat_intervals and heuristic_repeat_intervals:
+            source_mode = "model+heuristic"
+        elif model_repeat_intervals:
+            source_mode = "model-only"
+        elif heuristic_repeat_intervals:
+            source_mode = "heuristic-only"
+        else:
+            source_mode = "none"
+
         total_repeat_bp = interval_total_bp(repeat_intervals)
         repeat_fraction = total_repeat_bp / len(normalized_seq)
         repeated = repeat_fraction >= self.config.min_repeat_fraction_positive
+
+        logger.info(
+            "Repeat inference summary: source=%s windows=%d model_intervals=%d heuristic_intervals=%d combined_intervals=%d repeat_bp=%d repeat_fraction=%.4f repeated=%s",
+            source_mode,
+            len(windows),
+            len(model_repeat_intervals),
+            len(heuristic_repeat_intervals),
+            len(repeat_intervals),
+            total_repeat_bp,
+            repeat_fraction,
+            repeated,
+        )
 
         repeated_segments = self._extract_top_segments(normalized_seq, repeat_intervals)
 
@@ -250,6 +323,8 @@ class RepeatInferenceService:
                 "window_size": int(self.config.window_size),
                 "stride": int(self.config.stride),
                 "valid_windows": int(len(windows)),
+                "model_predicted_repeat_intervals": int(len(model_repeat_intervals)),
+                "heuristic_repeat_intervals": int(len(heuristic_repeat_intervals)),
                 "predicted_repeat_intervals": int(len(repeat_intervals)),
                 "total_repeat_bp": int(total_repeat_bp),
                 "repeat_fraction": float(repeat_fraction),

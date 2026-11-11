@@ -173,6 +173,12 @@
         <label for="query_subsequence" style="margin-top:0.7rem;">Optional subsequence to check (Is this sequence repeated?)</label>
         <input id="query_subsequence" name="query_subsequence" type="text" value="{{ query_subsequence }}" placeholder="Example: ATATATAT" />
 
+        <label for="model_choice" style="margin-top:0.7rem;">Repeat detection model</label>
+        <select id="model_choice" name="model_choice" style="width:100%;box-sizing:border-box;border:1px solid #c7c1b3;border-radius:10px;padding:0.7rem;font-size:0.96rem;background:#ffffff;color:var(--ink);">
+          <option value="direct" {% if model_choice == "direct" %}selected{% endif %}>Direct repeat CNN (recommended)</option>
+          <option value="mlm" {% if model_choice == "mlm" %}selected{% endif %}>MLM embeddings + logistic</option>
+        </select>
+
         <div class="button-row">
           <button type="submit">Analyze Sequence</button>
         </div>
@@ -189,6 +195,7 @@
     <section class="panel">
       <h2>Summary</h2>
       <div class="grid">
+        <div class="metric"><div class="label">Model used</div><div class="value">{{ result.model_choice|default("direct") }}</div></div>
         <div class="metric"><div class="label">Repeated?</div><div class="value">{{ "Yes" if result.sequence_summary.is_repeated else "No" }}</div></div>
         <div class="metric"><div class="label">Sequence length</div><div class="value">{{ result.sequence_summary.length }}</div></div>
         <div class="metric"><div class="label">Predicted repeat intervals</div><div class="value">{{ result.sequence_summary.predicted_repeat_intervals }}</div></div>
