@@ -6,8 +6,8 @@
   <title>Genome Repeat Explorer</title>
   <style>
     :root {
-      --bg: #f4f2ea;
-      --panel: #fffdf6;
+      --bg: #ffffff;
+      --panel: #ffffff;
       --ink: #1b2a22;
       --muted: #4e5c53;
       --accent: #0f7b6c;
@@ -20,10 +20,7 @@
       margin: 0;
       font-family: "Segoe UI", "Trebuchet MS", sans-serif;
       color: var(--ink);
-      background:
-        radial-gradient(circle at 15% 10%, #e4efe7 0%, transparent 35%),
-        radial-gradient(circle at 85% 90%, #e6efe9 0%, transparent 35%),
-        var(--bg);
+      background: var(--bg);
       line-height: 1.45;
     }
 
@@ -34,7 +31,7 @@
     }
 
     .hero {
-      background: linear-gradient(130deg, #edf4ef, #f8f6ef);
+      background: #f7faf8;
       border: 1px solid var(--border);
       border-radius: 18px;
       padding: 1.1rem;
@@ -59,6 +56,11 @@
       border-radius: 14px;
       padding: 1rem;
       margin-bottom: 1rem;
+    }
+
+    .panel h2 {
+      margin: 0 0 0.6rem;
+      letter-spacing: 0.2px;
     }
 
     label {
@@ -100,6 +102,18 @@
       border-radius: 10px;
       font-weight: 700;
       cursor: pointer;
+      transition: transform 0.08s ease, box-shadow 0.08s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 14px rgba(15, 123, 108, 0.24);
+    }
+
+    .muted-note {
+      margin: 0.4rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
     }
 
     .error {
@@ -143,6 +157,12 @@
       font-size: 0.91rem;
     }
 
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
     th,
     td {
       border-bottom: 1px solid #d7d2c4;
@@ -155,6 +175,30 @@
     th {
       background: #f0ebde;
       font-weight: 700;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #f9fcfb;
+    }
+
+    .mono-seq {
+      font-family: "Consolas", "Courier New", monospace;
+      letter-spacing: 0.2px;
+    }
+
+    .status-chip {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      background: #e4f3ee;
+      color: #106455;
+    }
+
+    .status-chip.no {
+      background: #f6ecec;
+      color: #874040;
     }
   </style>
 </head>
@@ -174,6 +218,7 @@
         <input id="query_subsequence" name="query_subsequence" type="text" value="{{ query_subsequence }}" placeholder="Example: ATATATAT" />
 
         <p style="margin-top:0.7rem;color:var(--muted);font-weight:600;">Repeat detection model: Token-level repeat CNN</p>
+        <p class="muted-note">Output is model-only. No heuristic baseline is used.</p>
 
         <div class="button-row">
           <button type="submit">Analyze Sequence</button>
@@ -192,7 +237,7 @@
       <h2>Summary</h2>
       <div class="grid">
         <div class="metric"><div class="label">Model used</div><div class="value">{{ result.model_choice|default("token") }}</div></div>
-        <div class="metric"><div class="label">Repeated?</div><div class="value">{{ "Yes" if result.sequence_summary.is_repeated else "No" }}</div></div>
+        <div class="metric"><div class="label">Repeated?</div><div class="value"><span class="status-chip {% if not result.sequence_summary.is_repeated %}no{% endif %}">{{ "Yes" if result.sequence_summary.is_repeated else "No" }}</span></div></div>
         <div class="metric"><div class="label">Sequence length</div><div class="value">{{ result.sequence_summary.length }}</div></div>
         <div class="metric"><div class="label">Predicted repeat intervals</div><div class="value">{{ result.sequence_summary.predicted_repeat_intervals }}</div></div>
         <div class="metric"><div class="label">Total repeat bp</div><div class="value">{{ result.sequence_summary.total_repeat_bp }}</div></div>
@@ -203,12 +248,15 @@
     <section class="panel">
       <h2>Predicted Repeat Intervals</h2>
       {% if result.repeat_intervals %}
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
             <th>Start</th>
             <th>End</th>
             <th>Length</th>
+            <th>Count in input</th>
+            <th>Count in predicted intervals</th>
             <th>Sequence</th>
           </tr>
         </thead>
@@ -218,11 +266,14 @@
             <td>{{ row.start }}</td>
             <td>{{ row.end }}</td>
             <td>{{ row.length }}</td>
-            <td>{{ row.sequence }}</td>
+            <td>{{ row.occurrence_count_in_input }}</td>
+            <td>{{ row.occurrence_count_in_predicted_intervals }}</td>
+            <td class="mono-seq">{{ row.sequence }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
+      </div>
       {% else %}
       <p>No repeat intervals were predicted for this sequence.</p>
       {% endif %}
@@ -231,6 +282,7 @@
     <section class="panel">
       <h2>Top Repeated Segments</h2>
       {% if result.repeated_segments %}
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -242,13 +294,14 @@
         <tbody>
           {% for row in result.repeated_segments %}
           <tr>
-            <td>{{ row.repeat_unit }}</td>
+            <td class="mono-seq">{{ row.repeat_unit }}</td>
             <td>{{ row.count }}</td>
             <td>{{ row.first_position }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
+      </div>
       {% else %}
       <p>No repeated segments found with current settings.</p>
       {% endif %}

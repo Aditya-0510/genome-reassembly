@@ -256,6 +256,28 @@ class TokenRepeatInferenceService:
                     "is_repeated": bool(total_count > 1),
                 }
 
+        interval_rows: list[dict[str, Any]] = []
+        for start, end in repeat_intervals:
+            interval_sequence = normalized_seq[start:end]
+            count_in_input = count_subsequence(normalized_seq, interval_sequence)
+            count_in_predicted_intervals = 0
+            for r_start, r_end in repeat_intervals:
+                count_in_predicted_intervals += count_subsequence(
+                    normalized_seq[r_start:r_end],
+                    interval_sequence,
+                )
+
+            interval_rows.append(
+                {
+                    "start": int(start),
+                    "end": int(end),
+                    "length": int(end - start),
+                    "sequence": interval_sequence,
+                    "occurrence_count_in_input": int(count_in_input),
+                    "occurrence_count_in_predicted_intervals": int(count_in_predicted_intervals),
+                }
+            )
+
         return {
             "errors": [],
             "sequence_summary": {
@@ -276,15 +298,7 @@ class TokenRepeatInferenceService:
                 "repeat_fraction": float(repeat_fraction),
                 "is_repeated": bool(repeated),
             },
-            "repeat_intervals": [
-                {
-                    "start": int(start),
-                    "end": int(end),
-                    "length": int(end - start),
-                    "sequence": normalized_seq[start:end],
-                }
-                for start, end in repeat_intervals
-            ],
+            "repeat_intervals": interval_rows,
             "repeat_windows": repeat_windows,
             "repeated_segments": repeated_segments,
             "query_result": query_result,
